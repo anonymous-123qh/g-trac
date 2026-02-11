@@ -169,12 +169,12 @@ Each run generates log files in the `logs/` directory:
 | `trust_mean_in_chain` | Mean trust value across chain |
 ## Visualization
 ### Client terminal
-#### on desktop
+#### 🖥️ Client Terminal (Desktop)
 <p align="center">
-  <img src="images/client.png" width="100%" alt="client's terminal" />
+  <img src="images/client.png" width="70%" alt="client's terminal" />
 </p>
 
-### on phone
+#### 📱 Client Terminal (Termux on Phone)
 <p align="center">
   <img src="images/phone.png" width="50%" alt="client's termux" />
 </p>

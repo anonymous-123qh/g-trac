@@ -179,7 +179,7 @@ Each run generates log files in the `logs/` directory:
   <img src="images/phone.png" width="50%" alt="client's termux" />
 </p>
 
-### Real-Time Dashboard
+### 🌐 Real-Time Dashboard
 The G-TRAC Anchor provides a web-based dashboard to monitor network health, trust updates, and routing decisions in real-time. Once the Anchor is running, access the dashboard at: 
 **[http://<ANCHOR_IP>:<ANCHOR_PORT>](http://<ANCHOR_IP>:<ANCHOR_PORT>)**
 

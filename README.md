@@ -21,7 +21,7 @@
    pip install -r requirements.txt
     ```
 
-> #### 💡 Dependency Scope
+> #### 💡 **Dependency Scope**
 > The `torch` and `transformers` dependencies are required **only for `worker` nodes/peers**.  
 > The `anchor` and `client` nodes can run without installing these libraries, enabling deployment on resource-constrained devices.
 
@@ -36,6 +36,7 @@ export TARP_MODEL=gpt2-large # Options: gpt2, gpt2-medium, gpt2-large, gpt2-xl
 # Optional: To use GPU
 export TARP_DEVICE=cuda
 ```
+
 1. Start the Anchor
    
 **Usage**
@@ -46,6 +47,7 @@ python run.py anchor <port>
 ```bash
 python run.py anchor 5000
 ```
+
 2. Start worker
    
 **Usage**
@@ -62,6 +64,7 @@ Starting a worker on port `6001` handling layers `0–35` (monolithic mode for t
 ```bash
 python run.py worker 127.0.0.1 6001 0 0 1 worker1 127.0.0.1 5000 0 35
 ```
+> #### 💡 **Note:** Replace `127.0.0.1` with the worker’s real IP address (e.g., a Tailscale IP) when running across multiple machines.
 
    
 4. Start client

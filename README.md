@@ -82,11 +82,11 @@ MODE (optional): Routing mode to use. Supported values:
 ```bash
 python run.py client 127.0.0.1 5000
 ```
-After the program run, the client's terminal shows 5 options:
+After starrting client, the terminal presents the following options:
 - [r] - Run a prompt
-- [m] - choose a  mode (routing approach)
-- [s] - reset the system back to the intial 
-- [w] - sweep mode to run all approaches with specific setting on generated length, query... for experiments 
+- [m] - Choose routing mode (routing approaches)
+- [s] - Reset the system to initial state 
+- [w] - Sweep mode (automatically executes all routing approaches under identical experimental configurations; the system state is automatically reset before each run to prevent bias from residual state)
 - [q] - exit
 
 ## Logs

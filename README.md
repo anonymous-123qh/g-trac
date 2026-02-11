@@ -33,8 +33,6 @@ Set the following environment variables before starting any component:
 ```bash
 export TARP_ENGINE=real
 export TARP_MODEL=gpt2-large # Options: gpt2, gpt2-medium, gpt2-large, gpt2-xl
-# Optional: To use GPU
-export TARP_DEVICE=cuda
 ```
 
 1. Start the Anchor

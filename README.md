@@ -21,6 +21,10 @@
    pip install -r requirements.txt
     ```
 
+> #### 💡 Dependency Scope
+> The `torch` and `transformers` dependencies are required **only for `worker` nodes/peers**.  
+> The `anchor` and `client` nodes can run without installing these libraries, enabling deployment on resource-constrained devices.
+
 ## Usage
 ### Environment Variables
 
@@ -78,12 +82,7 @@ MODE (optional): Routing mode to use. Supported values:
 
 - `g-trac` -- Trust-aware G-TRAC routing (Default)
 
-> #### 💡 Lightweight Client Mode
-> Client mode does not require `torch` or `transformers`.
 
-
-
-  
 **Example**   
 ```bash
 python run.py client 127.0.0.1 5000

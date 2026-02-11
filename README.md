@@ -77,6 +77,12 @@ MODE (optional): Routing mode to use. Supported values:
 - `naive` -- Baseline random routing
 
 - `g-trac` -- Trust-aware G-TRAC routing (Default)
+
+> #### 💡 Lightweight Client Mode
+> Client mode does not require `torch` or `transformers`.
+
+
+
   
 **Example**   
 ```bash
@@ -164,8 +170,14 @@ Each run generates log files in the `logs/` directory:
 | `trust_mean_in_chain` | Mean trust value across chain |
 ## Visualization
 ### Client terminal
+#### on desktop
 <p align="center">
   <img src="images/client.png" width="100%" alt="client's terminal" />
+</p>
+
+### on phone
+<p align="center">
+  <img src="images/phone.png" width="50%" alt="client's termux" />
 </p>
 
 ### Real-Time Dashboard

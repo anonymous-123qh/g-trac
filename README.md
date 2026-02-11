@@ -82,7 +82,91 @@ MODE (optional): Routing mode to use. Supported values:
 ```bash
 python run.py client 127.0.0.1 5000
 ```
+After the program run, the client's terminal shows 5 options:
+- [r] - Run a prompt
+- [m] - choose a  mode (routing approach)
+- [s] - reset the system back to the intial 
+- [w] - sweep mode to run all approaches with specific setting on generated length, query... for experiments 
+- [q] - exit
+
+## Logs
+
+Each run generates log files in the `logs/` directory:
+
+- `distributed_trace_<algo>_<model>_<timestamp>.csv`  
+ 
+
+  #### Formats
+
+| Column | Description |
+|--------|-------------|
+| `token_idx` | Token index in generation sequence |
+| `trace_id` | Unique generation trace identifier |
+| `e2e_latency_ms` | End-to-end latency (ms) |
+| `sum_hop_cpu_ms` | Total CPU time across hops |
+| `sum_hop_wall_ms` | Total wall-clock time across hops |
+| `num_hops` | Number of routing hops |
+| `max_hop_rss_mb` | Maximum RSS memory per hop (MB) |
+| `client_rss_mb` | Client memory usage (MB) |
+
+
+- `trust_<timestamp>.csv`  
+  
+   #### Formats
+
+| Column | Description |
+|--------|-------------|
+| `run_id` | Unique identifier for the experiment run |
+| `ts_unix` | Unix timestamp of the measurement |
+| `mode` | Routing mode used (`sp`, `mr`, `larac`, `naive`, `g-trac`) |
+| `request_id` | Associated request identifier |
+| `node_id` | Worker/node identifier |
+| `trust` | Current trust score of the node (range `[0, 1]`) |
+| `lat_ewma_ms` | Exponentially weighted moving average latency (ms) |
+| `alive` | Whether the node is currently alive (boolean) |
+| `layer_start` | Starting model layer hosted by the node |
+| `layer_end` | Ending model layer hosted by the node |
+| `in_chain` | Whether the node was selected in the routing chain (boolean) |
+| `failed_id` | Identifier of failed node (if failure occurred) |
+   
+
+- `requests_<timestamp>.csv`  
+
+
+  #### Formats
+
+| Column | Description |
+|--------|-------------|
+| `run_id` | Unique identifier for the experiment run |
+| `ts_unix` | Unix timestamp of the request |
+| `mode` | Routing mode used (`sp`, `mr`, `larac`, `naive`, `g-trac`) |
+| `engine` | Backend execution engine (e.g., `real`) |
+| `model` | LLM model name (e.g., `gpt2-large`) |
+| `request_id` | Unique request identifier |
+| `prompt_len_tokens` | Number of input prompt tokens |
+| `target_new_tokens` | Target number of tokens to generate |
+| `generated_new_tokens` | Actual number of tokens generated |
+| `completed` | Whether generation completed normally (boolean) |
+| `request_success` | Whether the request succeeded (boolean) |
+| `request_e2e_ms` | End-to-end request latency (ms) |
+| `selection_overhead_ms` | Routing selection overhead (ms) |
+| `repair_used` | Whether repair mechanism was triggered (boolean) |
+| `repair_attempted` | Whether a repair attempt was made (boolean) |
+| `repair_succeeded` | Whether repair succeeded (boolean) |
+| `failed_id` | ID of failed worker (if any) |
+| `failed_error` | Error message associated with failure |
+| `failed_stage` | Stage where failure occurred |
+| `chain_ids` | Sequence of worker IDs used in routing |
+| `chain_layers` | Layer partitions traversed |
+| `client_rss_mb` | Client memory usage (MB) |
+| `trust_tau` | Trust decay or smoothing parameter |
+| `trust_min_in_chain` | Minimum trust value among workers in chain |
+| `trust_mean_in_chain` | Mean trust value across chain |
 ## Visualization
+### Client terminal
+<p align="center">
+  <img src="images/client.png" width="100%" alt="client's terminal" />
+</p>
 
 ### Real-Time Dashboard
 The G-TRAC Anchor provides a web-based dashboard to monitor network health, trust updates, and routing decisions in real-time.

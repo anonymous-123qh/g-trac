@@ -68,26 +68,26 @@ python run.py client <ANCHOR_IP> <ANCHOR_PORT> [MODE]
 ```
 MODE (optional): Routing mode to use. Supported values:
 
-- `sp` — Shortest Path (Latency only)
+- `sp` -- Shortest Path (Latency only)
 
-- `mr` — Max Reliability
+- `mr` -- Max Reliability
 
-- `larac` — Lagrangian relaxation
+- `larac` -- Lagrangian relaxation
 
-- `naive` — Baseline random routing
+- `naive` -- Baseline random routing
 
-- `g-trac` — Trust-aware G-TRAC routing (Default)
+- `g-trac` -- Trust-aware G-TRAC routing (Default)
   
 **Example**   
 ```bash
 python run.py client 127.0.0.1 5000
 ```
 After starrting client, the terminal presents the following options:
-- [r] - Run a prompt
-- [m] - Choose routing mode (routing approaches)
-- [s] - Reset the system to initial state 
-- [w] - Sweep mode (automatically executes all routing approaches under identical experimental configurations; the system state is automatically reset before each run to prevent bias from residual state)
-- [q] - exit
+- [r] -- Run a prompt
+- [m] -- Choose routing mode (routing approaches)
+- [s] -- Reset the system to initial state 
+- [w] -- Sweep mode (perform all routing approaches under identical experimental configurations; the system state is automatically reset before each run to prevent bias from residual state)
+- [q] -- exit
 
 ## Logs
 

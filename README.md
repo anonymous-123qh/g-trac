@@ -64,7 +64,6 @@ Starting a worker on port `6001` handling layers `0–35` (monolithic mode for t
 ```bash
 python run.py worker 127.0.0.1 6001 0 0 1 worker1 127.0.0.1 5000 0 35
 ```
-> #### 💡 **Note:** Replace `127.0.0.1` with the worker’s real IP address (e.g., a Tailscale IP) when running across multiple machines.
 
    
 4. Start client

@@ -171,12 +171,12 @@ Each run generates log files in the `logs/` directory:
 ### Client terminal
 #### 🖥️ Client Terminal (Desktop)
 <p align="center">
-  <img src="images/client.png" width="70%" alt="client's terminal" />
+  <img src="images/client.png" width="80%" alt="client's terminal" />
 </p>
 
 #### 📱 Client Terminal (Termux on Phone)
 <p align="center">
-  <img src="images/phone.png" width="50%" alt="client's termux" />
+  <img src="images/phone.png" width="40%" alt="client's termux" />
 </p>
 
 ### 🌐 Real-Time Dashboard

@@ -67,11 +67,33 @@ python run.py anchor 5000
    
 **Syntax**
 ```bash
-python run.py worker <IP> <PORT> <CPU> <FAIL_RATE> <TRUST> <ID> <ANCHOR_IP> <ANCHOR_PORT> <L_START> <L_END>
+python run.py worker <IP> <PORT> <CPU_LOAD> <FAIL_RATE> <TRUST0> <ID> <ANCHOR_IP> <ANCHOR_PORT> <L_START> <L_END>
 ```
-- `CPU`: CPU burn level (e.g., `1`)
-- `FAIL_RATE`: Failure rate in range `[0, 1]`
-- `TRUST`: Initial trust score in range `[0, 1]`
+- `CPU_LOAD`: Artificial compute intensity (non-negative integer).
+  - `0` → no delay
+  - Higher value → slower worker
+  - Recommended: `0–15`
+  - Does **not** control actual CPU cores
+
+  **Simulation mode**: models compute cost.  
+  **Real mode**: adds delay on top of real inference.
+
+
+- `FAIL_RATE`: Probability of simulated failure per request (range `[0.0, 1.0]`).
+
+  - `0.0` → worker never fails  
+  - `1.0` → worker always fails  
+  - Values in between represent probabilistic failure injection  
+
+  Applies in both **simulation mode** and **real mode**.
+  
+- `TRUST0`: Initial trust score assigned to the worker (range `[0.0, 1.0]`).
+
+  - `0.0` → completely untrusted  
+  - `1.0` → fully trusted  
+
+  The trust value is maintained by the anchor and dynamically updated
+  based on request outcomes (success or failure feedback).
   
 **Example**  
 Starting a worker on port `6001` handling layers `0–35` (monolithic mode for testing):

@@ -2,6 +2,23 @@
 
 **G-TRAC** (Generative Trust-Aware Routing and Adaptive Chaining) is a coordination framework for distributed Large Language Model (LLM) inference over decentralized and unreliable edge networks. It transforms inference routing from a best-effort transport problem into a **Risk-Bounded Shortest Path** control problem, ensuring reliable token generation even on heterogeneous devices.
 
+## System Overview
+<p align="center">
+  <img src="images/g-trac_flow.png" width="80%" alt="client's terminal"/>
+</p>
+
+✔ **Control/Data Plane Separation**: Trust management and routing decisions are decoupled from inference execution.
+
+✔ **Layer-Partitioned Execution**: Model layers are distributed across heterogeneous peers and composed into a contiguous execution chain.
+
+✔ **Trust-Constrained Routing**: Paths are selected to satisfy a global reliability threshold.
+
+✔ **Latency-Aware Optimization**: Among feasible chains, the lowest-latency path is chosen.
+
+✔ **Replica-Based Repair**: Failed hops are dynamically replaced without restarting the full request.
+
+
+
 ## Installation
 
 ### Prerequisites

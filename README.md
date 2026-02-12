@@ -52,9 +52,9 @@ export TARP_ENGINE=real
 export TARP_MODEL=gpt2-large # Options: gpt2, gpt2-medium, gpt2-large, gpt2-xl
 ```
 
-1. Start the Anchor
+### 1. Start the Anchor
    
-**Usage**
+**Syntax**
 ```bash
 python run.py anchor <port>
 ```
@@ -63,9 +63,9 @@ python run.py anchor <port>
 python run.py anchor 5000
 ```
 
-2. Start worker
+### 2. Start worker
    
-**Usage**
+**Syntax**
 ```bash
 python run.py worker <IP> <PORT> <CPU> <FAIL_RATE> <TRUST> <ID> <ANCHOR_IP> <ANCHOR_PORT> <L_START> <L_END>
 ```
@@ -81,9 +81,9 @@ python run.py worker 127.0.0.1 6001 0 0 1 worker1 127.0.0.1 5000 0 35
 ```
 
    
-4. Start client
+### 3. Start client
 
-**Usage**
+**Syntax**
 ```bash
 python run.py client <ANCHOR_IP> <ANCHOR_PORT> [MODE]
 ```

@@ -6,11 +6,13 @@ import random
 import traceback
 import hashlib
 from .. import consts, utils, model_shard
-
+import torch
+from transformers import AutoConfig, AutoTokenizer
 app = Flask(__name__)
-MY_CONFS = {}  # For multi-worker
-MY_CONF = {}       # Fallback for single-worker mode
+MY_CONFS = {}  #for multi-worker
+MY_CONF = {}       #fallback for single-worker mode
 MODEL_SHARD = None
+TOKENIZER = None #for light mode
 
 #--Helper ---
 def transform_activation(inp: bytes, worker_id: str, hop_index: int) -> bytes:
@@ -57,36 +59,40 @@ def process():
     """
         Request JSON schema:
           {
-            "path": [{"id":..,"ip":..,"port":..,"layer_start":..,"layer_end":..}, ...],
+            "path": [...],
             "hop_index": <int>,
-            "activation_b64": "<base64 bytes>",
+            "activation_b64": "<base64 bytes>",  (Optional if prompt is present)
+            "prompt": "<string>",                (Optional, for Light Mode)
             "trace_id": "<string>",
-            "per_hop": [ ... ]   # optional carry-forward
+            "per_hop": [ ... ]
           }
-        """
+    """
+
+    global MODEL_SHARD, TOKENIZER
     req = request.get_json(silent=True) or {}
     # --- DEBUG: inspect incoming payload (protocol + base64 sanity) ---
     print(f"[process] IN from={request.remote_addr} keys={list(req.keys())}")
+    prompt = req.get("prompt", None)  #Capture text input
+    act_b64 = req.get("activation_b64", "")
+    if act_b64:
+        print(f"[process] IN activation_b64 missing/not-str type={type(act_b64)}")
 
-    ab = req.get("activation_b64", None)
-    if not isinstance(ab, str):
-        print(f"[process] IN activation_b64 missing/not-str type={type(ab)}")
-    else:
-        print(f"[process] IN activation_b64 len={len(ab)} head={ab[:16]!r} tail={ab[-16:]!r}")
-    # ---------------------------------------------------------------
+    if prompt:
+        print(f"[process] IN prompt len={len(prompt)}")
+    # ---------------------------------------------
 
     trace_id = str(req.get("trace_id", "trace-unknown"))
     path = req.get("path", [])
     hop_index = int(req.get("hop_index", 0))
-    act_b64 = req.get("activation_b64", "")
+
 
     my_id = str(MY_CONF.get("id", "unknown"))
 
     # Basic validation
     if not isinstance(path, list) or hop_index < 0 or hop_index >= len(path):
         return jsonify({"trace_id": trace_id, "failed_id": my_id, "error": "bad_request"}), 400
-    if not act_b64:
-        return jsonify({"trace_id": trace_id, "failed_id": my_id, "error": "missing_activation"}), 400
+    if not act_b64 and not prompt:
+        return jsonify({"trace_id": trace_id, "failed_id": my_id, "error": "missing_activation_or_prompt"}), 400
 
     # Determine which "peer identity" this hop is supposed to be
     expected_id = str(path[hop_index].get("id", ""))
@@ -116,7 +122,7 @@ def process():
                 "actual": my_id
             }), 400
 
-    # ---- TRACE START (hop identity) ----
+    #TRACE START (hop identity)
     try:
         my_ls = int(conf.get("layer_start", -1))
         my_le = int(conf.get("layer_end", -1))
@@ -167,39 +173,58 @@ def process():
                         "rss_mb": round(utils.rss_mb(), 2), "ok": False})
         return jsonify({"trace_id": trace_id, "failed_id": my_id, "per_hop": per_hop, "error": "local_fail"}), 500
 
-    # Local processing
-    # t0 = now_ms()
 
-    # ---- Measure compute region (wall + CPU) ----
+    #Input handling (either text or tensor)
+    input_tensor = None
 
+    #Simulator mode
     if consts.TARP_ENGINE != "real":
         try:
-            inp = utils.b64d(act_b64)
-            # t0_wall = now_ms()
-            # t0_cpu = cpu_time_ms()
-            # --- simulated ---
+            if act_b64:
+                inp = utils.b64d(act_b64)
+            elif prompt:
+                inp = prompt.encode("utf-8")  # Fake input for sim
+            else:
+                raise ValueError("No Input")
+
+            #simulated inference mode
             utils.burn_cpu(int(conf.get("cpu_load", 0)))
             out = transform_activation(inp, my_id, hop_index)
-            # proc_ms = now_ms() - t0
-            # per_hop.append({"id": my_id, "proc_ms": round(proc_ms, 2), "ok": True})
             out_b64 = utils.b64e(out)
         except Exception:
             per_hop.append({"id": my_id, "layer_start": int(conf["layer_start"]),
                             "layer_end": int(conf["layer_end"]), "proc_ms": None, "cpu_ms": None,
                             "rss_mb": round(utils.rss_mb(), 2), "ok": False})
 
-            return jsonify({"trace_id": trace_id, "failed_id": my_id, "per_hop": per_hop, "error": "bad_b64"}), 400
+            return jsonify({"trace_id": trace_id, "failed_id": my_id, "per_hop": per_hop, "error": "sim_fail"}), 400
 
     else:
+        #real inference mode
         try:
-            input_tensor = utils.b64_to_tensor(act_b64)
+            #Case 1: light mode (text input) only happen at hop 0
+            # Priority 1: If we have a prompt AND we are the first hop, TOKENIZE
+            if prompt and (not act_b64 or len(act_b64) < 10) and int(conf.get("layer_start", -1)) == 0:
+                print(f"[WKR] Light Mode Entry: Tokenizing '{prompt}'")
+                #use the MODEL_SHARD instance created in start_worker
+
+                if TOKENIZER is None:
+                    TOKENIZER = AutoTokenizer.from_pretrained(consts.MODEL_NAME)
+
+
+                #tokenizer = model_shard.get_tokenizer()
+                input_ids = TOKENIZER.encode(prompt, return_tensors="pt")
+                input_tensor = input_ids.to(consts.DEVICE)
+                #print(f"[WKR] Tokenized prompt: shape={input_tensor.shape}")
+            #Case 2:  standard mode (tensor input)
+            elif act_b64 and len(act_b64) > 10:
+                input_tensor = utils.b64_to_tensor(act_b64)
+            else:
+                raise ValueError("No valid input (empty tensor and not an entry prompt)")
+
 
         except Exception as e:
             print(f"[process] b64_to_tensor FAILED on {my_id}: {type(e).__name__}: {e}")
-            print(f"[process] activation_b64 len={len(act_b64) if isinstance(act_b64, str) else None}")
-            # optional: print a tiny prefix/suffix for padding issues
-            if isinstance(act_b64, str):
-                print(f"[process] activation_b64 head={act_b64[:16]!r} tail={act_b64[-16:]!r}")
+            print(f"[process] Input Conversion FAILED on {my_id}: {e}")
 
             # stop timers for consistency (optional)
             t1_wall = utils.now_ms()
@@ -213,10 +238,18 @@ def process():
                 "rss_mb": round(utils.rss_mb(), 2),
                 "ok": False
             })
-            return jsonify(
-                {"trace_id": trace_id, "failed_id": my_id, "per_hop": per_hop, "error": "bad_tensor_b64"}), 400
+            return jsonify({
+                "trace_id": trace_id,
+                "failed_id": my_id,
+                "per_hop": per_hop,
+                "error": f"input_conversion_failed: {type(e).__name__}"
+            }), 400
 
+        #Now do inference
         try:
+            if input_tensor is None:
+                raise ValueError("input_tensor is None before forward pass")
+
             utils.burn_cpu(int(conf.get("cpu_load", 0)))  # Add CPU Load simulation to Real inference too
             output_tensor = MODEL_SHARD.forward(input_tensor)
         except Exception as e:
@@ -240,8 +273,10 @@ def process():
                             "error": f"inference_exception:{e}"}), 500
 
         # proc_ms = now_ms() - t0
-        # per_hop.append({"id": my_id, "proc_ms": round(proc_ms, 2), "ok": True})
+        #prepare output for next step, which is tensor
         out_b64 = utils.tensor_to_b64(output_tensor)
+
+    #Recorded metrics
     t1_wall = utils.now_ms()
     t1_cpu = utils.cpu_time_ms()
     proc_ms = t1_wall - t0_wall
@@ -263,25 +298,30 @@ def process():
           f"since_start_ms={(t_req_comp_done - t_req_in) * 1000.0:.1f}",
           flush=True)
 
-    # Forward or finish
+    #Now forward (middle hops) or finish (if last hop)
     if hop_index < len(path) - 1:
         nxt = path[hop_index + 1]
         nxt_url = f"http://{nxt['ip']}:{int(nxt['port'])}/process"
         failed_id = str(nxt.get("id", "unknown"))
         try:
+
             print(f"[WKR] FWD_START trace={trace_id} from={my_id} -> {failed_id} "
                   f"url={nxt_url} out_b64_len={len(out_b64) if isinstance(out_b64, str) else None}",
                   flush=True)
+
+            payload = {
+                "trace_id": trace_id,
+                "path": path,
+                "hop_index": hop_index + 1,
+                "activation_b64": out_b64,  # Always send Tensor to next hop
+                "per_hop": per_hop,
+            }
+            if prompt:
+                payload["prompt"] = prompt
             t_fwd0 = time.perf_counter()
             resp = requests.post(
                 nxt_url,
-                json={
-                    "trace_id": trace_id,
-                    "path": path,
-                    "hop_index": hop_index + 1,
-                    "activation_b64": out_b64,
-                    "per_hop": per_hop,
-                },
+                json=payload,
                 timeout=consts.FWD_REQ_TIMEOUT_SEC,
             )
             t_fwd1 = time.perf_counter()
@@ -326,7 +366,44 @@ def process():
                 "error": "forward_fail",
             }), 500
 
-    # Final hop
+    #If this is final hop, need to do text detokenization + penalty
+    #if this is last hop and it is a prompt context (text data, not tensor)
+    if prompt and consts.TARP_ENGINE == "real":
+        try:
+            if TOKENIZER is None:
+                TOKENIZER = AutoTokenizer.from_pretrained(consts.MODEL_NAME)
+
+            # A. Get Logits for the next token (Last position)
+            next_token_logits = output_tensor[:, -1, :]
+
+            # B. Apply Repetition Penalty (Server Side)
+            # Re-tokenize the prompt to find what tokens are already used
+            input_ids = TOKENIZER.encode(prompt, return_tensors="pt").to(consts.DEVICE)
+            used_tokens = set(input_ids[0].tolist())
+
+            for t in used_tokens:
+                next_token_logits[0, t] -= 2.0  # Penalty
+
+            # C. Select Best Token
+            next_token_id = torch.argmax(next_token_logits, dim=-1)
+
+            # D. Decode to Text
+            generated_text = TOKENIZER.decode(next_token_id)
+
+            print(f"[WKR] FINAL HOP (Light Mode): Generated '{generated_text}'")
+
+            return jsonify({
+                "trace_id": trace_id,
+                "generated_text": generated_text,  #Return Text to Light Client
+                "per_hop": per_hop,
+                "done": True
+            })
+
+        except Exception as e:
+            print(f"[WKR] Detokenize Error: {e}")
+            return jsonify({"error": f"detokenize_error: {e}"}), 500
+
+    #default return (tensor in real mode or simulated mode)
     return jsonify({
         "trace_id": trace_id,
         "final_activation_b64": out_b64,
@@ -358,7 +435,7 @@ def start_worker(args):
     args is a namespace/object containing:
     ip, port, cpu_load, fail_rate, trust0, id, anchor_ip, anchor_port, layer_start, layer_end
     """
-    global MODEL_SHARD, MY_CONF, MY_CONFS
+    global MODEL_SHARD, TOKENIZER, MY_CONF, MY_CONFS
 
     # 1. Setup Configuration (Matches original dictionary structure)
     MY_CONF = {
@@ -379,7 +456,10 @@ def start_worker(args):
 
     #Initialize Real Model Shard (If enabled)
     if consts.TARP_ENGINE == "real":
-        from transformers import AutoConfig
+
+        print(f"[Worker] Loading tokenizer for {consts.MODEL_NAME}...")
+        # Load it once during startup
+        TOKENIZER = AutoTokenizer.from_pretrained(consts.MODEL_NAME)
 
         # Load config to check total layers and ensure consistency
         cfg = AutoConfig.from_pretrained(consts.MODEL_NAME)

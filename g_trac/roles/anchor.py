@@ -13,26 +13,26 @@ def route_dashboard():
 
     now = utils.unix_ts()
 
-    #Create a "Display Registry" with the fields the HTML needs
+    #create a Display Registry with the fields the HTML needs
     display_registry = {}
 
     for wid, data in REGISTRY.items():
-        # Make a copy so we don't modify the real registry
+
         node = data.copy()
 
-        # Calculate Age
+        #calculate age
         last_seen = float(node.get("last_seen_ts", 0))
         age = now - last_seen
 
-        # --- MAP FIELDS FOR THE HTML TEMPLATE ---
-        node["alive"] = (age < consts.NODE_TTL_S)  # Required for ONLINE/OFFLINE status
-        node["age_str"] = f"{age:.1f}s"  # Required for "Seen X s ago"
-        node["latency"] = int(node.get("lat_ewma_ms", 0))  # Required for "Est. Latency"
-        node["cpu_load"] = node.get("cpu_load", 0)  # For tooltip
-        node["net_delay_ms"] = node.get("net_delay_ms", 0)  # For tooltip
+        #MAP FIELDS FOR THE HTML TEMPLATE
+        node["alive"] = (age < consts.NODE_TTL_S)  #for ONLINE/OFFLINE status
+        node["age_str"] = f"{age:.1f}s"  #for "Seen X s ago"
+        node["latency"] = int(node.get("lat_ewma_ms", 0))  #for "Est. Latency"
+        node["cpu_load"] = node.get("cpu_load", 0)  #for tooltip
+        node["net_delay_ms"] = node.get("net_delay_ms", 0)  #for tooltip
 
         #CALCULATE TRUST TREND
-        # Compare current trust vs previous trust to determine arrow direction
+        #compare current trust vs previous trust to determine arrow direction
         current_trust = float(node.get("trust", 1.0))
         prev_trust = float(node.get("prev_trust", current_trust))
 
@@ -44,10 +44,10 @@ def route_dashboard():
         else:
             node["display_trust_trend"] = "eq"
 
-        # Add to display dict
+
         display_registry[wid] = node
 
-    # 3. Render
+    #render
     return render_template_string(
         dashboard.DASHBOARD_HTML,
         registry=display_registry,
@@ -58,13 +58,13 @@ def route_dashboard():
 def register():
     data = request.get_json(silent=True) or {}
     wid = str(data.get("id", "")).strip()
-    # Normalize layers
+    #normalize layers
     ls, le = utils.node_layers(data)
     if not wid:
         print("[Anchor] Register reject: missing id. Payload:", data)
         return jsonify({"error": "missing id"}), 400
 
-    # Required for Petals-like constraints
+
     if "layer_start" not in data or "layer_end" not in data:
         print(f"[Anchor] Register reject {wid}: missing layer fields. Payload:", data)
         return jsonify({"error": "missing layer_start/layer_end"}), 400
@@ -77,7 +77,7 @@ def register():
     data["lat_ewma_ms"] = float(data.get("lat_ewma_ms", consts.LAT_INIT_MS))
     data["last_seen_ts"] = utils.unix_ts()
 
-    # Normalize layers
+    #normalize layers
     ls, le = utils.node_layers(data)
     if ls < 0 or le < ls or le >= consts.MODEL_LAYERS:
         print(f"[Anchor] Register reject {wid}: invalid layer range [{ls},{le}] MODEL_LAYERS={consts.MODEL_LAYERS}. Payload:",

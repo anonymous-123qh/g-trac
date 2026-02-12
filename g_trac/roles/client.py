@@ -10,12 +10,23 @@ import math
 LOCAL_CACHE = {}
 ANCHOR_REACHABLE = True
 
-#Globals PARAMENTERS
+#DETECT CAPABILITIES JUST IN CASE SOME NODES DOES NOT HAVE TORCH ...
+try:
+    import torch
+    from transformers import AutoTokenizer, AutoConfig
+    HAS_TORCH = True
+    print("[Client] PyTorch & Transformers detected. Using HEAVY mode (Faster Server).")
+except ImportError:
+    HAS_TORCH = False
+    print("[Client] PyTorch NOT detected. Using LIGHT mode (Text-Only).")
+
+#Globals
 LOCAL_CACHE = {}
 ANCHOR_REACHABLE = True
 TOKENIZER = None
 GLOBAL_CONFIG = None
-CURRENT_MODEL_LAYERS = consts.MODEL_LAYERS  # Can be updated by AutoConfig
+#CURRENT_MODEL_LAYERS = consts.MODEL_LAYERS  #updated by AutoConfig
+MODEL_LAYERS = 36  #default to 36 (GPT-2 Large) if can't load config
 
 #Helper Functions for only Client
 def _chain_ids(chain: list) -> str:
@@ -50,9 +61,9 @@ def probe_worker_reachable(node: Dict[str, Any], timeout: float = 0.5) -> bool:
 
         j = r.json()
 
-        # Logic from original probe_alive:
-        # If the worker returns a list of "peers", we must check if
-        # the specific ID we want is actually in that list.
+        #logic from original probe_alive:
+                #- If the worker returns a list of "peers", we must check if
+                #the specific ID we want is actually in that list.
         if isinstance(j, dict) and "peers" in j and isinstance(j["peers"], list):
             want_id = str(node.get("id", ""))
             #create a set of IDs served by this physical worker
@@ -65,6 +76,7 @@ def probe_worker_reachable(node: Dict[str, Any], timeout: float = 0.5) -> bool:
         return True
     except Exception:
         return False
+
 def log_trust_snapshot(mode: str, request_id: str, chain: list, failed_id: str):
     """Logs the trust state of nodes involved in a request."""
     chain_ids = {str(n.get("id")) for n in chain}
@@ -72,13 +84,13 @@ def log_trust_snapshot(mode: str, request_id: str, chain: list, failed_id: str):
     if failed_id:
         ids.add(str(failed_id))
 
-    # We need to look up node details in LOCAL_CACHE
+    #look up node details in LOCAL_CACHE
     for nid in ids:
         meta = LOCAL_CACHE.get(str(nid))
         if not meta:
             continue
 
-        # Define fields specific to trust log
+        #define fields specific to trust log
         TRUST_FIELDS = ["run_id", "ts_unix", "mode", "request_id", "node_id", "trust", "lat_ewma_ms", "alive",
                         "layer_start", "layer_end", "in_chain", "failed_id"]
 
@@ -95,21 +107,53 @@ def log_trust_snapshot(mode: str, request_id: str, chain: list, failed_id: str):
             "in_chain": 1 if str(nid) in chain_ids else 0,
             "failed_id": (str(failed_id) if failed_id is not None else "unknown"),
         })
+
 def client_gossip_loop(anchor_ip, anchor_port):
+    """
+       Background gossip thread that periodically synchronizes local state
+       with the anchor node.
+
+       - Sends HTTP GET requests to /sync.
+       - On success (HTTP 200), updates LOCAL_CACHE with anchor snapshot.
+       - Maintains ANCHOR_REACHABLE flag for liveness tracking.
+       - Executes every consts.GOSSIP_FREQ_SEC seconds.
+
+       """
+
     global LOCAL_CACHE, ANCHOR_REACHABLE
+
+    target_url = f"http://{anchor_ip}:{anchor_port}/sync"
+    print(f"[Gossip] Thread started. Target: {target_url}", flush=True)
+
     while True:
         try:
-            r = requests.get(f"http://{anchor_ip}:{anchor_port}/sync", timeout=1)
+            r = requests.get(f"http://{anchor_ip}:{anchor_port}/sync", timeout=3)
             if r.status_code == 200:
                 LOCAL_CACHE = r.json()
+                if not ANCHOR_REACHABLE:
+                    print(f"[Gossip] SUCCESS! Connected to {anchor_ip}")
                 ANCHOR_REACHABLE = True
-        except Exception:
+            else:
+                print(f"[Gossip] Connected, but HTTP Error: {r.status_code}")
+                ANCHOR_REACHABLE = False
+        except Exception as e:
             ANCHOR_REACHABLE = False
-            print("[Gossip] Anchor unreachable; using cached registry.")
+            print(f"[Gossip] FAILED: {e}")
         time.sleep(consts.GOSSIP_FREQ_SEC)
 
 
 def run_sweep(anchor_ip, anchor_port, prompt, n_tokens=50, reps=3):
+    """
+        Runs an experimental sweep across multiple decision modes.
+
+        For each mode:
+          1) Reset anchor-side state (e.g., trust/latency estimators) via /reset_state.
+          2) Wait briefly to allow the gossip thread to refresh LOCAL_CACHE.
+          3) Execute `reps` repeated trials using either:
+             - real text generation (run_client_generation) if consts.TARP_ENGINE == "real", or
+             - the synthetic client request path (run_client_request) otherwise.
+
+        """
 
     modes = ["naive", "g-trac", "sp", "mr", "larac"]
 
@@ -270,7 +314,7 @@ def run_client_request(anchor_ip: str, anchor_port: int, mode: str):
     except Exception as e:
         elapsed = utils.now_ms() - t0
 
-        # Do NOT assume entry failed. Probe it.
+        #not assume entry failed. Probe it.
         failed_error = f"exception:{type(e).__name__}"
         entry_alive = probe_worker_reachable(entry, timeout=0.5)
 
@@ -284,7 +328,7 @@ def run_client_request(anchor_ip: str, anchor_port: int, mode: str):
             print(
                 f"FAILURE: timeout after {elapsed:.0f} ms; entry alive; failure likely downstream/slow; no failed_id attribution.")
 
-    # Optional one-shot hop repair
+    #optional one-shot hop repair
     if (not success) and consts.REPAIR_ON_FAILURE and failed_id:
         failed_node = next((n for n in chain if str(n.get("id")) == str(failed_id)), None)
         if failed_node:
@@ -345,8 +389,8 @@ def run_client_request(anchor_ip: str, anchor_port: int, mode: str):
                         success = True
                         repair_succeeded = 1
                         failed_id = None
-                        failed_error = ""  # clear because final outcome is success
-                        failed_stage = ""  # clear
+                        failed_error = ""
+                        failed_stage = ""
                         chain = chain2
 
                         print(f"REPAIR SUCCESS in {elapsed2:.0f} ms")
@@ -418,10 +462,33 @@ def run_client_request(anchor_ip: str, anchor_port: int, mode: str):
     })
     log_trust_snapshot(mode, request_id, chain, failed_id)
 
+
 def run_client_generation(anchor_ip: str, anchor_port: int, mode: str, prompt_text: str, max_new_tokens: int = 50):
-    """Autoregressive GPT-2 generation over the selected multi-hop layer chain."""
+    """
+    Client-side driver for distributed, token-by-token generation over a multi-hop worker chain.
 
+    Workflow:
+      1) Reads worker metadata from LOCAL_CACHE and selects a feasible layer chain via routing.select_chain(..., mode).
+      2) Notifies the anchor of the active chain (best-effort).
+      3) For each token step:
+         - Sends a /process request to the first worker in the chain with a 'path' describing all hops.
+         - Receives the final activation (Heavy mode) or generated text (Light mode).
+         - Prints tokens as they arrive and records per-token latency + per-hop metrics.
+         - Sends per-step feedback to the anchor (/feedback), even on failures (best-effort).
 
+    Modes:
+      - Heavy mode (HAS_TORCH=True): encodes prompt with a local tokenizer and exchanges activations (base64 tensors).
+      - Light mode (HAS_TORCH=False): sends raw text context and receives generated text (no local torch/tokenizer).
+
+    Side effects:
+      - Writes per-token traces to CSV under consts.LOG_DIR.
+      - Appends a request-level summary row to consts.REQUEST_LOG_PATH.
+    """
+
+    #sampling paramters to make the prompt results more fun :D
+    TEMPERATURE = 0.7  # 0.7 is balanced. 1.0 is crazy. 0.1 is robotic.
+    TOP_K = 50  # Only choose from the top 50 best words.
+    #-------------------------------------------------------
     if mode not in ("naive", "g-trac",  "sp", "mr", "larac"):
         print("Mode must be: naive | g-trac | sp | mr | larac")
         return
@@ -429,28 +496,87 @@ def run_client_generation(anchor_ip: str, anchor_port: int, mode: str, prompt_te
 
     #lazy tokenizer init
     global TOKENIZER, MODEL_LAYERS, GLOBAL_CONFIG
-    from transformers import AutoTokenizer, AutoConfig
-    import torch
+    # --- 1. SETUP (Heavy vs Light) ---
+    if HAS_TORCH:
+        # HEAVY SETUP: Initialize Tokenizer
+        if TOKENIZER is None:
+            TOKENIZER = AutoTokenizer.from_pretrained(consts.MODEL_NAME)
+        if GLOBAL_CONFIG is None:
+            GLOBAL_CONFIG = AutoConfig.from_pretrained(consts.MODEL_NAME)
+            total = int(getattr(GLOBAL_CONFIG, "n_layer", 0))
+            if total > 0: MODEL_LAYERS = total
 
-    if TOKENIZER is None:
-        TOKENIZER = AutoTokenizer.from_pretrained(consts.MODEL_NAME)
-
+        # Prepare Initial Tensor
+        generated = TOKENIZER.encode(prompt_text, return_tensors="pt")
+        prompt_len_tokens = int(generated.shape[1])
+        print(f"[Client] Heavy Mode: Prompt encoded to {prompt_len_tokens} tokens.")
+    else:
+        # LIGHT SETUP: Prepare String Context
+        current_context = prompt_text
+        prompt_len_tokens = len(prompt_text.split())  # Approx
+        print(f"[Client] Light Mode: Sending raw text ({prompt_len_tokens} words).")
+        if MODEL_LAYERS <= 0: MODEL_LAYERS = 36
+    #if TOKENIZER is None:
+    #    TOKENIZER = AutoTokenizer.from_pretrained(consts.MODEL_NAME)
+    consts.MODEL_LAYERS = MODEL_LAYERS
     ##Only load config one
-    if GLOBAL_CONFIG is None:
-        print("[Client] Loading Config (one-time)...")
+    #if GLOBAL_CONFIG is None:
+    #    print("[Client] Loading Config (one-time)...")
         #local_files_only=False allows download first time, but we cache the object in RAM
-        GLOBAL_CONFIG = AutoConfig.from_pretrained(consts.MODEL_NAME)
+    #    GLOBAL_CONFIG = AutoConfig.from_pretrained(consts.MODEL_NAME)
 
         #update global MODEL_LAYERS only once
-        total = int(getattr(GLOBAL_CONFIG, "n_layer", 0))
-        if total > 0:
-            MODEL_LAYERS = total
-            print(f"[Client] Detected {MODEL_LAYERS} layers from config.")
+    #    total = int(getattr(GLOBAL_CONFIG, "n_layer", 0))
+    #    if total > 0:
+    #        MODEL_LAYERS = total
+    #        print(f"[Client] Detected {MODEL_LAYERS} layers from config.")
 
     # Selection
     candidates = list(LOCAL_CACHE.values())
-    candidates = [c for c in candidates if utils.is_alive(c)]
+    # --- FIX: SANITIZE DATA TYPES ---
+    # JSON sometimes sends numbers as strings. We must force them to ints/floats.
+    clean_candidates = []
+    for c in candidates:
+        try:
+            # Force Layers to Int
+            c['layer_start'] = int(c.get('layer_start', -1))
+            c['layer_end'] = int(c.get('layer_end', -1))
 
+            # Force Trust/Port to Float/Int
+            c['trust'] = float(c.get('trust', 0))
+            c['port'] = int(c.get('port', 80))
+
+            clean_candidates.append(c)
+        except ValueError:
+            print(f"[Client] Warning: Skipping malformed worker data: {c.get('id')}")
+            continue
+
+    candidates = clean_candidates
+
+    #--------------------------------
+    # DEBUG BLOCK
+    print(f"\n[DEBUG] Target MODEL_LAYERS: 0 to {MODEL_LAYERS - 1}")
+
+    # 1. Check raw cache
+    print(f"[DEBUG] Total Workers in Cache: {len(LOCAL_CACHE)}")
+
+    # 2. Check Liveness (Clock Sync Issue?)
+    for c in candidates:
+        is_alive = utils.is_alive(c)
+        status = "ALIVE" if is_alive else "DEAD (Check Clocks!)"
+        # Print details
+        print(
+            f" - Worker {c.get('id')}: Layers [{c.get('layer_start')}-{c.get('layer_end')}] | {status} | Trust={c.get('trust', 0)}")
+
+
+    print(f"[DEBUG] forcing usage of all {len(candidates)} workers.")
+    # -----------------------------------
+
+    # Sort by layer start to see the sequence clearly
+    candidates.sort(key=lambda x: x['layer_start'])
+    print(f"\n[DEBUG] Target: 0 to {MODEL_LAYERS - 1} | Available Workers:")
+    for c in candidates:
+        print(f" - {c['id']}: [{c['layer_start']} - {c['layer_end']}]")
     t_sel0= time.perf_counter()
     chain = routing.select_chain(candidates, mode)
     t_sel1 = time.perf_counter()
@@ -489,11 +615,12 @@ def run_client_generation(anchor_ip: str, anchor_port: int, mode: str, prompt_te
     print("Prompt:", prompt_text)
     print("Output:", end=" ", flush=True)
 
-    generated = TOKENIZER.encode(prompt_text, return_tensors="pt")
-    prompt_len_tokens = int(generated.shape[1])
-    t_req0 = time.perf_counter()
+    #generated = TOKENIZER.encode(prompt_text, return_tensors="pt")
+    #prompt_len_tokens = int(generated.shape[1])
+
 
     # trace average/p99/max/min latency
+    t_req0 = time.perf_counter()
     token_lat_ms: List[float] = []
     token_success: int = 0
     token_fail: int = 0
@@ -512,8 +639,26 @@ def run_client_generation(anchor_ip: str, anchor_port: int, mode: str, prompt_te
         success = False
         failed_id = None
         per_hop: List[Dict[str, Any]] = []
-
+        new_word = ""
+        stop_generation = False  #flag for EOS
         try:
+            #PREPARE PAYLOAD
+            payload = {
+                "trace_id": trace_id,
+                "path": path,
+                "hop_index": 0,
+                "activation_b64": ""
+            }
+
+            if HAS_TORCH:
+                #HEAVY: Send Tensor Bytes
+                payload["activation_b64"] = utils.tensor_to_b64(generated)
+            else:
+                #LIGHT: Send Raw Text
+                payload["prompt"] = current_context
+                payload["activation_b64"] = None
+
+            #SEND REQUEST
             chain_hops = len(path)
             #worst-case wait is dominated by forward timeouts across hops
             safe_client_timeout = (chain_hops - 1) * consts.FWD_REQ_TIMEOUT_SEC + 5.0
@@ -521,12 +666,7 @@ def run_client_generation(anchor_ip: str, anchor_port: int, mode: str, prompt_te
 
             r = requests.post(
                 url,
-                json={
-                    "trace_id": trace_id,
-                    "path": path,
-                    "hop_index": 0,
-                    "activation_b64": utils.tensor_to_b64(generated),
-                },
+                json=payload,
                 timeout=timeout_to_use,
             )
             elapsed = utils.now_ms() - t0
@@ -551,34 +691,58 @@ def run_client_generation(anchor_ip: str, anchor_port: int, mode: str, prompt_te
                 default=0.0
             )
 
+            #HANDLE RESPONSE
+            if r.status_code == 200:
+                #Case 1: heavy resposne (tensor)
+                if HAS_TORCH :
+                    logits = utils.b64_to_tensor(j["final_activation_b64"])  # [batch, seq, vocab]
+                    next_token_logits = logits[:, -1, :]
+                    #--THIS IS OPTIONAL, CAN BE REMOVED------------------------------------------------
+                    #apply temperature to make sentence randomness
+                    next_token_logits = next_token_logits / TEMPERATURE
+                    #then use top-k filtering to keep top k options
+                    if TOP_K > 0:
+                        top_k_vals, _ = torch.topk(next_token_logits, TOP_K)
+                        min_val = top_k_vals[:, -1]
+                        # Set everything below top-k to -infinity so we don't pick them
+                        next_token_logits[next_token_logits < min_val] = -float('Inf')
 
-            if r.status_code == 200 and "final_activation_b64" in j:
+                    #Calculate Probabilities (Softmax)
+                    probs = torch.softmax(next_token_logits, dim=-1)
 
-                logits = utils.b64_to_tensor(j["final_activation_b64"])  #[batch, seq, vocab]
-                next_token_logits = logits[:, -1, :]
-                #get tokens already generated
-                used_tokens = set(generated[0].tolist())
+                    #Sample from the distribution (Instead of Argmax)
+                    next_token_id = int(torch.multinomial(probs, num_samples=1).item())
+                    # --END OF OPTIONAL PART, CAN BE REMOVED------------------------------------------------
 
-                #penalize
-                for t in used_tokens:
-                    next_token_logits[0, t] -= 2.0  #strong penalty subtraction
+                    #if removed the above optional block, then uncomment the line right below
+                    #next_token_id = int(torch.argmax(next_token_logits, dim=-1).item())
+                    next_token = torch.tensor([[next_token_id]], dtype=generated.dtype)
+                    new_word = TOKENIZER.decode([next_token_id])
+                    generated = torch.cat([generated, next_token], dim=1)
+                    # check for EOS
+                    if next_token_id == TOKENIZER.eos_token_id:
+                        stop_generation = True
 
 
-                next_token_id = int(torch.argmax(next_token_logits, dim=-1).item())
-                next_token = torch.tensor([[next_token_id]], dtype=generated.dtype)
-                piece = TOKENIZER.decode([next_token_id])
-                generated = torch.cat([generated, next_token], dim=1)
-                print(piece, end="", flush=True)
+                #Case 2: Light response -- text
+                else :
+                    new_word = j.get("generated_text", "")
+                    current_context += new_word
 
-                #check for EOS
-                if next_token_id == TOKENIZER.eos_token_id:
-                    print("\n[EOS reached]")
-                    #break
+                    # EOS Check for Light Mode (String check)
+                    # Note!!!!!!!!!!!!!1! might need to adjust "<|endoftext|>" depending on model
+                    if "<|endoftext|>" in new_word:
+                        stop_generation = True
+
+
+
+                print(new_word, end="", flush=True)
+
                 token_lat_ms.append(float(elapsed))
                 token_cpu_ms.append(float(step_cpu_ms))
                 token_hop_wall_ms.append(float(step_hop_wall_ms))  # optional
                 token_success += 1
-
+                success = True
                 step_client_rss = utils.rss_mb()
                 token_rows.append({
                     "token_idx": step,  # 0-based; use step+1 if you prefer 1-based
@@ -590,8 +754,9 @@ def run_client_generation(anchor_ip: str, anchor_port: int, mode: str, prompt_te
                     "max_hop_rss_mb": float(step_max_rss),
                     "client_rss_mb": float(step_client_rss),
                 })
-
-                success = True
+                if stop_generation:
+                    print("\n[EOS reached]")
+                    # break # Uncomment if you want to stop early
 
             else:
                 failed_id = str(j.get("failed_id", entry["id"]))
@@ -638,9 +803,9 @@ def run_client_generation(anchor_ip: str, anchor_port: int, mode: str, prompt_te
             w = csv.DictWriter(f, fieldnames=list(token_rows[0].keys()))
             if f.tell() == 0: w.writeheader()
             w.writerows(token_rows)
-        print(f"[Trace] Wrote per-token trace to: {out_csv}")
+        print(f"\n[Trace] Wrote per-token trace to: {out_csv}")
     else:
-        print("[Trace] No token rows to write (no successful tokens).")
+        print("\n[Trace] No token rows to write (no successful tokens).")
 
     # print statistic
     print("\n\n------------------------------------------------")
@@ -967,16 +1132,39 @@ def run_client_generation_with_repair(anchor_ip: str, anchor_port: int, mode: st
 
 
 def start_client(anchor_ip, anchor_port, mode):
-    threading.Thread(target=client_gossip_loop, args=(anchor_ip, anchor_port), daemon=True).start()
+    """
+        Interactive client CLI entrypoint.
 
+        - Spawns a background gossip thread (client_gossip_loop) to keep LOCAL_CACHE updated and
+          maintain ANCHOR_REACHABLE.
+        - Provides a simple REPL for running requests/generation against the selected routing mode:
+            [r] run    : execute one request (real generation or synthetic depending on consts.TARP_ENGINE)
+            [m] mode   : set routing/selection mode (naive|g-trac|sp|mr|larac)
+            [s] reset  : reset anchor-side state (/reset_state), then wait for gossip to refresh
+            [w] sweep  : run multi-mode experiment sweep (run_sweep)
+            [q] quit   : exit
+
+        Notes:
+          - `mode` is updated in-place based on user input.
+          - Sleeps provide settling time for anchor reset + cache convergence.
+        """
+
+    # Start Gossip Thread
+    t = threading.Thread(target=client_gossip_loop, args=(anchor_ip, anchor_port), daemon=True)
+    t.start()
+    # Give it a second to connect
+    time.sleep(1.0)
     while True:
-        cmd = input("\n[r] run  [m] mode  [s] reset  [w] sweep  [q] quit: ").strip().lower()
+        try:
+            cmd = input("\n[r] run  [m] mode  [s] reset  [w] sweep  [q] quit: ").strip().lower()
+        except EOFError:
+            break  #Ctrl+D
 
         if cmd == "q":
             break
         if cmd == "m":
-            mode2 = input("Mode (naive|g-trac|sp|mr|rnd|larac): ").strip().lower()
-            if mode2 in ("naive", "g-trac", "sp", "mr", "rnd", "larac"):
+            mode2 = input("Mode (naive|g-trac|sp|mr|larac): ").strip().lower()
+            if mode2 in ("naive", "g-trac", "sp", "mr",  "larac"):
                 mode = mode2
                 print("Mode set to:", mode)
             else:
@@ -1007,7 +1195,7 @@ def start_client(anchor_ip, anchor_port, mode):
                 print(f"[Client] Reset failed: {e}")
             continue
         if cmd == "w":
-            prompt_text = input("Prompt: ").strip() or "Sweden is"
+            prompt_text = input("Prompt: ").strip() or "Hello there"
             n = int(input("Max new tokens [50]: ").strip() or "50")
             reps = int(input("Reps per mode [3]: ").strip() or "3")
             run_sweep(anchor_ip, anchor_port, prompt_text, n_tokens=n, reps=reps)

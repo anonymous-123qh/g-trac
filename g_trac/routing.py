@@ -8,118 +8,6 @@ from . import consts, utils
 print("__name__ =", __name__)
 print("__package__ =", __package__)
 
-def build_routing_graph(candidates: List[Dict[str, Any]]):
-    nodes = {str(c['id']): c for c in candidates}
-    graph = {'SOURCE': {}, 'SINK': {}}
-    by_start = {}
-    for c in candidates:
-        ls = int(c['layer_start'])
-        if ls not in by_start: by_start[ls] = []
-        by_start[ls].append(c)
-
-    for c in candidates:
-        cid = str(c['id'])
-        if cid not in graph: graph[cid] = {}
-        lat = utils.get_lat_ms(c)
-        tr = max(utils.get_trust(c), 0.0001)
-        risk = -math.log(tr)
-
-        if int(c['layer_start']) == 0:
-            graph['SOURCE'][cid] = {'latency': lat, 'reliability': tr, 'risk_cost': risk}
-
-        #using consts.MODEL_LAYERS
-        if int(c['layer_end']) == consts.MODEL_LAYERS - 1:
-            graph[cid]['SINK'] = {'latency': 0.0, 'reliability': 1.0, 'risk_cost': 0.0}
-
-        next_ls = int(c['layer_end']) + 1
-        if next_ls in by_start:
-            for nxt in by_start[next_ls]:
-                nid = str(nxt['id'])
-                n_lat = utils.get_lat_ms(nxt)
-                n_tr = max(utils.get_trust(nxt), 0.0001)
-                n_risk = -math.log(n_tr)
-                graph[cid][nid] = {'latency': n_lat, 'reliability': n_tr, 'risk_cost': n_risk}
-    return graph, nodes
-
-
-def run_dijkstra(graph, start_node, end_node, weight_fn):
-    pq = [(0.0, start_node, [])]
-    visited_costs = {}
-    while pq:
-        cost, u, path = heapq.heappop(pq)
-        path = path + [u]
-        if u == end_node: return path, cost
-        if u in visited_costs and visited_costs[u] <= cost: continue
-        visited_costs[u] = cost
-        for v, attrs in graph.get(u, {}).items():
-            w = weight_fn(attrs)
-            if w == float('inf'): continue
-            heapq.heappush(pq, (cost + w, v, path))
-    return None, float('inf')
-
-
-def find_path_larac(graph, start_node, end_node, min_reliability):
-    """
-    LARAC Heuristic for Constrained Shortest Path.
-    Minimize Latency s.t. Reliability >= min_reliability
-    """
-    max_risk = -math.log(max(min_reliability, 1e-9))
-
-    #fastest path (Lambda = 0)
-    p_L, _ = run_dijkstra(graph, start_node, end_node, lambda e: e['latency'])
-    if not p_L: return None
-
-    def calc_risk(path):
-        r = 0.0
-        for i in range(len(path) - 1):
-            r += graph[path[i]][path[i + 1]]['risk_cost']
-        return r
-
-    risk_L = calc_risk(p_L)
-    if risk_L <= max_risk:
-        return p_L  #fastest path satisfies constraint
-
-    # 2. Safest path (Lambda huge)
-    p_R, _ = run_dijkstra(graph, start_node, end_node, lambda e: e['risk_cost'])
-    if not p_R: return None
-
-    risk_R = calc_risk(p_R)
-    if risk_R > max_risk:
-        return None  #even safest path violates constraint
-
-    def calc_lat(path):
-        l = 0.0
-        for i in range(len(path) - 1):
-            l += graph[path[i]][path[i + 1]]['latency']
-        return l
-
-    lat_L = calc_lat(p_L)
-    lat_R = calc_lat(p_R)
-
-    # 3. Iterate
-    best_path = p_R
-    lambda_val = (lat_R - lat_L) / (risk_L - risk_R + 1e-9)
-
-    for _ in range(5):  #5-10 iterations
-        p_new, _ = run_dijkstra(graph, start_node, end_node, lambda e: e['latency'] + lambda_val * e['risk_cost'])
-        if not p_new: break
-
-        r_new = calc_risk(p_new)
-        l_new = calc_lat(p_new)
-
-        if r_new <= max_risk:
-            best_path = p_new
-            risk_R = r_new
-            lat_R = l_new
-        else:
-            risk_L = r_new
-            lat_L = l_new
-
-        if abs(risk_L - risk_R) < 1e-6: break
-        lambda_val = (lat_R - lat_L) / (risk_L - risk_R + 1e-9)
-
-    return best_path
-
 
 def enumerate_feasible_chains(
         candidates: List[Dict[str, Any]],
@@ -146,25 +34,29 @@ def enumerate_feasible_chains(
 
     out: List[List[Dict[str, Any]]] = []
 
-    def dfs(expected_ls: int, chain: List[Dict[str, Any]]):
-        if len(out) >= max_chains:
-            return
+    #iterative Stack: each element is (expected_ls, current_chain)
+    #use a stack to simulate the DFS behavior
+    stack = [(0, [])]
+
+    while stack and len(out) < max_chains:
+        expected_ls, chain = stack.pop()
+
+        # Success condition: chain covers all layers
         if expected_ls == consts.MODEL_LAYERS:
-            out.append(chain[:])
-            return
+            out.append(chain)
+            continue
+
         options = start_map.get(expected_ls, [])
-        if not options:
-            return
-        for n in options:
+        # We process options in reverse for the stack so the
+        # 'best' workers (sorted to the front) are popped first.
+        for n in reversed(options):
             ls, le = utils.node_layers(n)
             next_expected = le + 1
-            if next_expected > consts.MODEL_LAYERS:
-                continue
-            chain.append(n)
-            dfs(next_expected, chain)
-            chain.pop()
 
-    dfs(0, [])
+            if next_expected <= consts.MODEL_LAYERS:
+                # Push a NEW chain to the stack
+                stack.append((next_expected, chain + [n]))
+
     return out
 
 
@@ -198,7 +90,7 @@ def select_chain(candidates: List[Dict[str, Any]], mode: str) -> List[Dict[str, 
         return []
 
     #
-    # 1. NAIVE / RANDOM
+    #NAIVE / RANDOM
     if mode in ("naive", "rnd", "random"):
         # Simple random valid path
         return _find_random_valid_path(alive_candidates)
@@ -206,7 +98,7 @@ def select_chain(candidates: List[Dict[str, Any]], mode: str) -> List[Dict[str, 
     #Build Graph for advanced modes
     graph, node_map = _build_routing_graph(alive_candidates)
 
-    # 2. G-TRAC
+    #G-TRAC
     # Strategy: Prune untrusted nodes, then find Lowest Latency path (Dijkstra)
     if mode =="g-trac":
         # Pruning Step: Filter out nodes with low trust
@@ -227,7 +119,7 @@ def select_chain(candidates: List[Dict[str, Any]], mode: str) -> List[Dict[str, 
             return [node_map[wid] for wid in path_ids[1:-1]]
         return []
 
-    # 3. SP (Shortest Path / Lowest Latency)
+    #SP (Shortest Path / Lowest Latency)
     if mode == "sp":
         path_ids = _run_dijkstra(graph, 'SOURCE', 'SINK', weight_key='latency')
 
@@ -235,7 +127,7 @@ def select_chain(candidates: List[Dict[str, Any]], mode: str) -> List[Dict[str, 
             return [node_map[wid] for wid in path_ids[1:-1]]
         return []
 
-    # 4. MR (Max Reliability / Max Trust)
+    #MR (Max Reliability / Max Trust)
     if mode == "mr":
         path_ids = _run_dijkstra(graph, 'SOURCE', 'SINK', weight_key='risk_cost')
 
@@ -243,7 +135,7 @@ def select_chain(candidates: List[Dict[str, Any]], mode: str) -> List[Dict[str, 
             return [node_map[wid] for wid in path_ids[1:-1]]
         return []
 
-    # 5. LARAC (Constrained Shortest Path)
+    #LARAC (Constrained Shortest Path)
     if mode == "larac":
         min_r = consts.LARAC_MIN_RELIABILITY
         path_ids = find_path_larac(graph, 'SOURCE', 'SINK', min_r)
@@ -312,7 +204,7 @@ def find_path_larac(graph: Dict, start_node: str, end_node: str, min_reliability
                 l += graph[u][v].get('latency', 0.0)
         return l
 
-    # 1. Fastest path (Lambda = 0) -> Pure Latency
+    #Fastest path (Lambda = 0) -> Pure Latency
     p_L = _run_dijkstra(graph, start_node, end_node, weight_key='latency')
     if not p_L: return None
 
@@ -320,21 +212,21 @@ def find_path_larac(graph: Dict, start_node: str, end_node: str, min_reliability
     if risk_L <= max_risk:
         return p_L  # Fastest path satisfies constraint
 
-    # 2. Safest path (Lambda huge) -> Pure Risk
+    #Safest path (Lambda huge) -> Pure Risk
     p_R = _run_dijkstra(graph, start_node, end_node, weight_key='risk_cost')
     if not p_R: return None
 
     risk_R = calc_risk(p_R)
     if risk_R > max_risk:
-        return None  # Even safest path violates constraint (Impossible)
+        return None  #even safest path violates constraint
 
     lat_L = calc_lat(p_L)
     lat_R = calc_lat(p_R)
 
-    # 3. Iterate
+    #Iterate
     best_path = p_R
 
-    # Avoid division by zero
+    #avoid division by zero
     denom = (risk_L - risk_R)
     if abs(denom) < 1e-9:
         return best_path
@@ -342,7 +234,7 @@ def find_path_larac(graph: Dict, start_node: str, end_node: str, min_reliability
     lambda_val = (lat_R - lat_L) / denom
 
     for _ in range(10):
-        # Dijkstra with custom weight: latency + lambda * risk
+        #Dijkstra with custom weight: latency + lambda * risk
         def weight_fn(edge):
             return edge.get('latency', 0) + lambda_val * edge.get('risk_cost', 0)
 
@@ -352,7 +244,7 @@ def find_path_larac(graph: Dict, start_node: str, end_node: str, min_reliability
         r_new = calc_risk(p_new)
         l_new = calc_lat(p_new)
 
-        # Check feasibility
+        #check feasibility
         if r_new <= max_risk:
             best_path = p_new
             risk_R = r_new
@@ -461,37 +353,40 @@ def _find_random_valid_path(nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         if s not in by_start: by_start[s] = []
         by_start[s].append(n)
 
-    target = consts.MODEL_LAYERS - 1
+    target_end = consts.MODEL_LAYERS - 1
 
-    def dfs(curr_layer_start):
-        cands = by_start.get(curr_layer_start, [])
-        random.shuffle(cands)
-        for c in cands:
-            le = int(c['layer_end'])
-            if le == target: return [c]
-            suffix = dfs(le + 1)
-            if suffix: return [c] + suffix
-        return None
+    # 2. Manual Stack for DFS: (current_layer_to_find, current_chain_list)
+    # We start looking for layer 0 with an empty chain.
+    stack = [(0, [])]
 
-    return dfs(0) or []
+    # Optional: Shuffle to ensure randomness across the whole process
+    for s in by_start:
+        random.shuffle(by_start[s])
+
+    while stack:
+        curr_ls, chain = stack.pop()
+
+        # Get candidates that start at the required layer
+        options = by_start.get(curr_ls, [])
+
+        for opt in options:
+            le = int(opt['layer_end'])
+            new_chain = chain + [opt]
+
+            # SUCCESS: We reached the final layer
+            if le == target_end:
+                return new_chain
+
+            # CONTINUE: Push the next required layer onto the stack
+            next_ls = le + 1
+            if next_ls in by_start:
+                stack.append((next_ls, new_chain))
+
+    # If we exhaust the stack without returning, no path exists
+    return []
 
 
-def find_replacement_for_failed_hop(candidates: List[Dict[str, Any]], failed_id: str,
-                                    ls: int, le: int, mode: str) -> Optional[Dict[str, Any]]:
-    replacements = [
-        n for n in candidates
-        if int(n["layer_start"]) == ls and int(n["layer_end"]) == le
-           and str(n["id"]) != str(failed_id) and utils.is_alive(n)
-    ]
-    if not replacements: return None
 
-    if mode in ("tarp", "mr"):
-        replacements.sort(key=lambda x: float(x.get("trust", 0)), reverse=True)
-    elif mode == "sp":
-        replacements.sort(key=lambda x: float(x.get("lat_ewma_ms", 999)))
-    else:
-        random.shuffle(replacements)
-    return replacements[0]
 
 def _run_dijkstra(graph: Dict, start: str, end: str, weight_key: str) -> Optional[List[str]]:
     """

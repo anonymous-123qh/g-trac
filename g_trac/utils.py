@@ -1,5 +1,4 @@
 import time
-import psutil
 import base64
 import io
 import os
@@ -15,7 +14,15 @@ except ImportError:
 
 from . import consts
 
-_PS_PROC = psutil.Process(os.getpid())
+#SAFE REPLACEMENT IF PSUTIL IS MISSING ---
+try:
+    import psutil
+    _PS_PROC = psutil.Process(os.getpid())
+    HAS_PSUTIL = True
+except ImportError:
+    HAS_PSUTIL = False
+
+
 
 def now_ms() -> float:
     return time.perf_counter() * 1000.0
@@ -24,11 +31,15 @@ def unix_ts() -> float:
     return time.time()
 
 def rss_mb() -> float:
-    return _PS_PROC.memory_info().rss / (1024 * 1024)
+    if HAS_PSUTIL:
+        return _PS_PROC.memory_info().rss / (1024 * 1024)
+    return 0.0  # Dummy value for phone
 
 def cpu_time_ms() -> float:
-    t = _PS_PROC.cpu_times()
-    return (float(t.user) + float(t.system)) * 1000.0
+    if HAS_PSUTIL:
+        t = _PS_PROC.cpu_times()
+        return (float(t.user) + float(t.system)) * 1000.0
+    return 0.0  # Dummy value
 
 def burn_cpu(intensity: int) -> None:
     if intensity <= 0: return
@@ -39,7 +50,7 @@ def burn_cpu(intensity: int) -> None:
         x ^= (x >> 13)
         x = (x * 2246822519) & 0xFFFFFFFF
 
-# --- Serialization ---
+#Serialization
 def b64e(b: bytes) -> str:
     return base64.b64encode(b).decode("ascii")
 
@@ -64,7 +75,7 @@ def b64_to_tensor(b64_str: str):
     buf = io.BytesIO(raw)
     return torch.load(buf, map_location="cpu", weights_only=False)
 
-# --- Node Helpers ---
+#Node Helpers
 def is_alive(node: Dict[str, Any], now: Optional[float] = None) -> bool:
     now = unix_ts() if now is None else now
     last = node.get("last_seen_ts")
@@ -85,7 +96,7 @@ def get_trust(node: Dict[str, Any]) -> float:
     try: return float(node.get("trust", 0.0))
     except: return 0.0
 
-# --- Logging ---
+#Logging
 def _ensure_header(path: str, fields: list):
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     if os.path.exists(path) and os.path.getsize(path) > 0: return
@@ -117,12 +128,12 @@ def prune_registry(registry: Dict[str, Any]):
     now = unix_ts()
     to_delete = []
 
-    # Identify dead nodes
+    #identify dead nodes
     for wid, meta in registry.items():
         last = float(meta.get("last_seen_ts", 0.0))
         if (now - last) > consts.PRUNE_AFTER_S:
             to_delete.append(wid)
 
-    # Remove them
+    #now remove dead nodes
     for wid in to_delete:
         del registry[wid]

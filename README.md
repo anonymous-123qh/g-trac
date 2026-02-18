@@ -30,7 +30,7 @@
 
 1. Clone the repository:
    ```bash
-   git clone [https://github.com/anonymous-123qh/g-trac.git](https://github.com/anonymous-123qh/g-trac.git)
+   git clone https://github.com/anonymous-123qh/g-trac.git
    cd g-trac
 
 2. Install packages:
